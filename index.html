@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Temp Mail Client</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #111;
+      color: #eee;
+      margin: 0;
+      padding: 20px;
+      overflow-x: hidden;
+    }
+    button, select {
+      padding: 8px;
+      margin: 5px;
+      background: #333;
+      color: #eee;
+      border: none;
+      border-radius: 4px;
+    }
+    #inbox .msg {
+      border: 1px solid #444;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #222;
+      cursor: pointer;
+    }
+    #inbox .msg:hover {
+      background: #333;
+    }
+    #slidePanel {
+      position: fixed;
+      top: 0;
+      right: -100%;
+      width: 400px;
+      height: 100%;
+      background: #222;
+      color: #eee;
+      box-shadow: -2px 0 10px rgba(0,0,0,0.5);
+      transition: right 0.4s ease;
+      padding: 20px;
+      overflow-y: auto;
+      z-index: 999;
+    }
+    #slidePanel.active {
+      right: 0;
+    }
+    .link-btn {
+      display: block;
+      margin: 10px 0;
+      padding: 8px;
+      background: #0078d7;
+      color: white;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+
+    /* Country Reveal Button */
+    #countryToggle {
+      position: fixed;
+      bottom: 15px;
+      right: 15px;
+      background: #333;
+      color: #eee;
+      border: none;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      font-size: 20px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+
+    #countryPopup {
+      position: fixed;
+      bottom: 65px;
+      right: 15px;
+      background: #222;
+      color: #0f0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+      display: none;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔥 Temp Mail Client</h2>
+  <button onclick="generateAccount()">Generate New Email</button>
+  <button onclick="refreshInbox()">Refresh Inbox</button>
+  <button onclick="clearSession()">Clear Session</button>
+  <select id="accountSelect" onchange="switchAccount(this.value)">
+    <option value="">Select account</option>
+  </select>
+  <p><strong>Email:</strong> <span id="emailDisplay">None</span></p>
+  <div id="inbox"></div>
+
+  <div id="slidePanel">
+    <button onclick="closePanel()">Close</button>
+    <div id="messageContent"></div>
+  </div>
+
+  <!-- Country Reveal UI -->
+  <button id="countryToggle">+</button>
+  <div id="countryPopup">Country: Poland</div>
+
+  <script>
+    const API = "https://api.mail.tm";
+    let accounts = JSON.parse(localStorage.getItem("accounts")) || {};
+    let current = localStorage.getItem("current") || null;
+    let refreshTimer = null;
+
+    function saveSession() {
+      localStorage.setItem("accounts", JSON.stringify(accounts));
+      localStorage.setItem("current", current);
+    }
+
+    function updateAccountDropdown() {
+      const select = document.getElementById("accountSelect");
+      select.innerHTML = '<option value="">Select account</option>';
+      Object.keys(accounts).forEach(email => {
+        const opt = document.createElement("option");
+        opt.value = email;
+        opt.textContent = email;
+        if (email === current) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+
+    function switchAccount(email) {
+      current = email;
+      saveSession();
+      document.getElementById("emailDisplay").textContent = email || "None";
+      refreshInbox();
+      if (refreshTimer) clearInterval(refreshTimer);
+      if (email) refreshTimer = setInterval(refreshInbox, 3000);
+    }
+
+    async function generateAccount() {
+      const domains = await fetch(`${API}/domains`).then(r => r.json());
+      const domain = domains["hydra:member"][0]?.domain || "mail.tm";
+      const local = Math.random().toString(36).substring(2, 12);
+      const address = `${local}@${domain}`;
+      const password = Math.random().toString(36).substring(2, 18);
+
+      await fetch(`${API}/accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, password })
+      });
+
+      const res = await fetch(`${API}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, password })
+      });
+
+      const data = await res.json();
+      accounts[address] = { password, token: data.token };
+      current = address;
+      saveSession();
+      updateAccountDropdown();
+      switchAccount(address);
+    }
+
+    async function refreshInbox() {
+      if (!current || !accounts[current]?.token) return;
+      const res = await fetch(`${API}/messages`, {
+        headers: { Authorization: `Bearer ${accounts[current].token}` }
+      });
+      const data = await res.json();
+      const inbox = document.getElementById("inbox");
+      inbox.innerHTML = "";
+
+      data["hydra:member"].forEach(msg => {
+        const div = document.createElement("div");
+        div.className = "msg";
+        div.innerHTML = `<strong>From:</strong> ${msg.from.address}<br>
+                         <strong>Subject:</strong> ${msg.subject}<br>
+                         <strong>Intro:</strong> ${msg.intro}`;
+        div.onclick = () => showMessage(msg.id);
+        inbox.appendChild(div);
+      });
+    }
+
+    async function showMessage(id) {
+      const res = await fetch(`${API}/messages/${id}`, {
+        headers: { Authorization: `Bearer ${accounts[current].token}` }
+      });
+      const msg = await res.json();
+      const html = msg.html?.join("") || `<pre>${msg.text}</pre>`;
+      const links = [...html.matchAll(/href=["'](https?:\/\/[^"']+)["']/g)].map(m => m[1]);
+
+      let content = `<h3>${msg.subject}</h3><p><strong>From:</strong> ${msg.from.address}</p>`;
+      content += html;
+      if (links.length) {
+        content += `<h4>Links:</h4>`;
+        links.forEach(url => {
+          if (url.startsWith("https://") || url.startsWith("http://")) {
+            content += `<a class="link-btn" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+          }
+        });
+      }
+
+      document.getElementById("messageContent").innerHTML = content;
+      document.getElementById("slidePanel").classList.add("active");
+    }
+
+    function closePanel() {
+      document.getElementById("slidePanel").classList.remove("active");
+    }
+
+    function clearSession() {
+      localStorage.removeItem("accounts");
+      localStorage.removeItem("current");
+      accounts = {};
+      current = null;
+      updateAccountDropdown();
+      document.getElementById("emailDisplay").textContent = "None";
+      document.getElementById("inbox").innerHTML = "";
+      closePanel();
+      if (refreshTimer) clearInterval(refreshTimer);
+    }
+
+    // Country popup toggle
+    const toggleBtn = document.getElementById("countryToggle");
+    const popup = document.getElementById("countryPopup");
+
+    toggleBtn.addEventListener("click", () => {
+      popup.style.display = popup.style.display === "none" ? "block" : "none";
+    });
+
+    // Initial load
+    updateAccountDropdown();
+    if (current) switchAccount(current);
+  </script>
+</body>
+</html>
